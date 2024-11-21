@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  bot:
+    build: .
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HISTORY_EXPIRY_HOURS=72
+      - MAX_HISTORY_LENGTH=10
+    restart: unless-stopped
