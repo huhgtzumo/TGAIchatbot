@@ -38,7 +38,7 @@ try:
         exec(f.read(), config_namespace)
     logger.info("成功導入配置")
     
-    # 從命名空間中���需的變量
+    # 從命名空間中需的變量
     BOT_TOKEN = config_namespace['BOT_TOKEN']
     OPENAI_API_KEY = config_namespace['OPENAI_API_KEY']
     ROLES = config_namespace['ROLES']
@@ -116,7 +116,8 @@ class RoleChatBot:
     def __init__(self):
         self.role_manager = RoleManager()
         self.user_roles = {}
-        self.custom_names = {}  # 添加自定義名稱存儲
+        self.custom_names = {}
+        self.voice_mode_users = set()  # 新增：追踪使用語音模式��用戶
         self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
         self.rate_limits = RateLimits()
         logger.info("RoleChatBot 初始化完成")
@@ -236,9 +237,9 @@ class RoleChatBot:
 
         except Exception as e:
             logger.error(f"處理語音消息時發生錯誤: {str(e)}")
-            await update.message.reply_text("抱歉，處理您的語音消息時發生��誤。")
+            await update.message.reply_text("抱歉，處理您的語音消息時發生錯誤。")
 
-    async def process_image(self, photo_bytes: bytes, role_id: str) -> str:
+    async def process_image(self, photo_bytes: bytes, role_id: str, caption: str = None) -> str:
         """根據角色處理圖片分析"""
         role_prompts = {
             "male_lover": "作為一個關心的男朋友，請描述這張圖片並給出溫柔的回應。",
@@ -246,7 +247,9 @@ class RoleChatBot:
             "butler": "作為一個專業的管家，請分析這張圖片並給出得體的回應。"
         }
         
-        prompt = role_prompts.get(role_id, "請描述這張圖片的內容，並以角色的身份做出回應。")
+        # 將圖片描述加入到提示詞中
+        base_prompt = role_prompts.get(role_id, "請描述這張圖片的內容，並以角色的身份做出回應。")
+        prompt = f"{base_prompt}\n用戶的圖片描述：{caption}" if caption else base_prompt
         
         try:
             base64_image = base64.b64encode(photo_bytes).decode('utf-8')
@@ -278,35 +281,47 @@ class RoleChatBot:
 
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """處理圖片消息"""
-        if not await self.rate_limits.check_rate_limit(self.rate_limits.vision_requests, RateLimits.GPT4_VISION_RPM):
-            await update.message.reply_text("抱歉，圖片分析服務當前請求過多，請稍後再試。")
-            return
-        
-        photo = update.message.photo[-1]
-        if photo.file_size > MAX_PHOTO_SIZE:
-            await update.message.reply_text("圖片太大，請發送小於 10MB 的圖片。")
-            return
-        
-        user_id = update.effective_user.id
-        if user_id not in self.user_roles:
-            await update.message.reply_text("請先使用 /start 命令選擇一個角色進行對話。")
-            return
-
         try:
+            # 檢查速率限制
+            if not await self.rate_limits.check_rate_limit(self.rate_limits.vision_requests, RateLimits.GPT4_VISION_RPM):
+                await update.message.reply_text("抱歉，圖片分析服務當前請求過多，請稍後再試。")
+                return
+            
+            photo = update.message.photo[-1]
+            if photo.file_size > MAX_PHOTO_SIZE:
+                await update.message.reply_text("圖片太大，請發送小於 10MB 的圖片。")
+                return
+            
+            user_id = update.effective_user.id
+            if user_id not in self.user_roles:
+                await update.message.reply_text("請先使用 /start 命令選擇一個角色進行對話。")
+                return
+
             photo_file = await context.bot.get_file(photo.file_id)
             photo_bytes = await photo_file.download_as_bytearray()
             
-            # 析圖片
+            # 分析圖片，傳入 caption
             role_id = self.user_roles[user_id]
-            response_text = await self.process_image(photo_bytes, role_id)
+            response_text = await self.process_image(
+                photo_bytes, 
+                role_id,
+                caption=update.message.caption
+            )
             
-            # 記錄對話
-            await self.process_message(update, context, "【分享了一張圖片】")
-            
-            # 發送回覆
+            # 發送回覆（只發送一次）
             custom_name = self.custom_names.get(user_id, self.role_manager.get_role(role_id)['name'])
             formatted_message = f"{custom_name}：{response_text}"
             await update.message.reply_text(formatted_message)
+            
+            # 將圖片回應添加到聊天歷史
+            self.role_manager.add_chat_history(user_id, role_id, {
+                "role": "user",
+                "content": "【分享了一張圖片】" + (f"\n留言：{update.message.caption}" if update.message.caption else "")
+            })
+            self.role_manager.add_chat_history(user_id, role_id, {
+                "role": "assistant",
+                "content": response_text
+            })
 
         except Exception as e:
             logger.error(f"處理圖片消息時發生錯誤: {str(e)}")
@@ -353,22 +368,25 @@ class RoleChatBot:
 
     async def process_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_text: str = None, voice_reply: bool = False):
         """處理消息的核心邏輯"""
+        user_id = update.effective_user.id
+        text = message_text or update.message.text
+        
+        # 檢查是否需要語音回覆
+        voice_keywords = ["用語音回答", "跟我說話", "用語音", "之後都用語音"]
+        if any(keyword in text for keyword in voice_keywords):
+            self.voice_mode_users.add(user_id)  # 將用戶加入語音模式
+            await update.message.reply_text("好的，我之後會用語音和您交流。")
+        
+        # 決定是否使用語音回覆
+        voice_reply = voice_reply or user_id in self.voice_mode_users
+        
         # 檢查速率限制
         if not await self.rate_limits.check_rate_limit(self.rate_limits.gpt35_requests, RateLimits.GPT35_RPM):
             await update.message.reply_text("抱歉，聊天服務當前請求過多，請稍後再試。")
             return
         
-        user_id = update.effective_user.id
         role_id = self.user_roles[user_id]
         role = self.role_manager.get_role(role_id)
-        
-        # 使用傳入的消息文本或原始消息文本
-        text = message_text or update.message.text
-        
-        # 檢查是否需要語音回覆
-        voice_keywords = ["唱", "唱歌", "說笑話", "念", "朗讀", "讀一讀", "說一說"]
-        if not voice_reply:  # 如果不是語音消息輸入
-            voice_reply = any(keyword in text for keyword in voice_keywords)
         
         # 添加用戶消息到歷史記錄
         self.role_manager.add_chat_history(user_id, role_id, {
