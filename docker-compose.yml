@@ -5,9 +5,16 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./config:/app/config
+      - ./temp:/app/temp
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - HISTORY_EXPIRY_HOURS=72
       - MAX_HISTORY_LENGTH=10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
     restart: unless-stopped

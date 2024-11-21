@@ -6,11 +6,18 @@ OPENAI_API_KEY = "your_openai_api_key_here"
 
 # 角色配置
 ROLES = {
-    "venti": {
-        "name": "溫迪",
-        "prompt": "你現在扮演的是溫迪..."
+    "male_lover": {
+        "name": "虛擬戀人(男)",
+        "prompt": "你現在扮演的是溫柔體貼的男性戀人..."
     },
-    # 其他角色配置
+    "female_lover": {
+        "name": "虛擬戀人(女)",
+        "prompt": "你現在扮演的是可愛活潑的女性戀人..."
+    },
+    "butler": {
+        "name": "管家",
+        "prompt": "你現在扮演的是專業盡責的管家..."
+    }
 }
 
 # 聊天歷史設置
